@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 
 namespace detect {
 
@@ -70,8 +71,18 @@ bool detectA4Corners(const cv::Mat& frameBGR,
 
   cv::Mat edges; cv::Canny(blurred, edges, 35, 105, 3, true);
 
-  cv::Mat combined; cv::bitwise_or(adaptive, edges, combined);
+  cv::Mat hsv; cv::cvtColor(frameBGR, hsv, cv::COLOR_BGR2HSV);
+  cv::Mat whiteMask;
+  const int S_MAX = 90;
+  const int V_MIN = 150;
+  cv::inRange(hsv, cv::Scalar(0, 0, V_MIN), cv::Scalar(179, S_MAX, 255), whiteMask);
+
   cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5,5));
+  cv::morphologyEx(whiteMask, whiteMask, cv::MORPH_CLOSE, kernel, cv::Point(-1,-1), 2);
+  cv::morphologyEx(whiteMask, whiteMask, cv::MORPH_OPEN, kernel, cv::Point(-1,-1), 1);
+
+  cv::Mat combined; cv::bitwise_or(adaptive, edges, combined);
+  cv::bitwise_and(combined, whiteMask, combined);
   cv::morphologyEx(combined, combined, cv::MORPH_CLOSE, kernel, cv::Point(-1,-1), 2);
   cv::dilate(combined, combined, kernel, cv::Point(-1,-1), 1);
 
@@ -81,13 +92,14 @@ bool detectA4Corners(const cv::Mat& frameBGR,
 
   const double imgArea = static_cast<double>(frameBGR.cols * frameBGR.rows);
   const double targetRatio = 297.0 / 210.0; // ~1.414
+  const double minAreaRatio = 0.0005;
 
   double bestScore = -1.0;
   std::vector<cv::Point> bestApprox;
 
   for (const auto& contour : contours) {
     double contourAreaVal = std::fabs(cv::contourArea(contour));
-    if (contourAreaVal < 0.0005 * imgArea) continue; // ignore trop petits éléments
+    if (contourAreaVal < minAreaRatio * imgArea) continue; // ignore trop petits éléments
 
     double peri = cv::arcLength(contour, true);
     std::vector<cv::Point> approx;
@@ -96,7 +108,7 @@ bool detectA4Corners(const cv::Mat& frameBGR,
     if (!cv::isContourConvex(approx)) continue;
 
     double approxArea = std::fabs(cv::contourArea(approx));
-    if (approxArea < 0.0005 * imgArea) continue;
+    if (approxArea < minAreaRatio * imgArea) continue;
 
     std::vector<cv::Point2f> orderedCandidate;
     if (!orderFourCorners(approx, orderedCandidate)) continue;
@@ -117,13 +129,62 @@ bool detectA4Corners(const cv::Mat& frameBGR,
     double ratio = (boxHeight > 0.0) ? (boxWidth / boxHeight) : 0.0;
     if (ratio < 1.05 || ratio > 1.9) continue;
 
+    auto angleDeg = [](const cv::Point2f& prev, const cv::Point2f& center,
+                       const cv::Point2f& next) {
+      cv::Point2f v1 = prev - center;
+      cv::Point2f v2 = next - center;
+      double denom = cv::norm(v1) * cv::norm(v2);
+      if (denom <= std::numeric_limits<double>::epsilon()) return 180.0;
+      double cosTheta = (v1.dot(v2)) / denom;
+      cosTheta = std::max(-1.0, std::min(1.0, cosTheta));
+      return std::acos(cosTheta) * 180.0 / CV_PI;
+    };
+
+    double anglePenalty = 0.0;
+    bool validAngles = true;
+    for (int i = 0; i < 4 && validAngles; ++i) {
+      const cv::Point2f& prev = orderedCandidate[(i + 3) % 4];
+      const cv::Point2f& center = orderedCandidate[i];
+      const cv::Point2f& next = orderedCandidate[(i + 1) % 4];
+      double angle = angleDeg(prev, center, next);
+      if (angle < 55.0 || angle > 125.0) {
+        validAngles = false;
+      } else {
+        anglePenalty += std::abs(angle - 90.0);
+      }
+    }
+    if (!validAngles) continue;
+
     double boundingArea = widthAvg * heightAvg;
     double solidity = approxArea / boundingArea;
     if (solidity < 0.7) continue;
 
-    double score = approxArea - std::abs(ratio - targetRatio) * 500.0;
-    score -= std::abs(topWidth - bottomWidth) * 2.0;
-    score -= std::abs(leftHeight - rightHeight) * 2.0;
+    std::vector<cv::Point> polyInt;
+    polyInt.reserve(4);
+    for (const auto& p : orderedCandidate) {
+      polyInt.emplace_back(cvRound(p.x), cvRound(p.y));
+    }
+    cv::Mat candidateMask = cv::Mat::zeros(whiteMask.size(), CV_8U);
+    cv::fillConvexPoly(candidateMask, polyInt, 255, cv::LINE_AA);
+
+    double whiteMean = cv::mean(whiteMask, candidateMask).val[0] / 255.0;
+    whiteMean = std::clamp(whiteMean, 0.0, 1.0);
+    if (whiteMean < 0.2) continue;
+
+    cv::Mat structureMask;
+    cv::bitwise_and(combined, candidateMask, structureMask);
+    double structureRatio = approxArea > 0.0
+                               ? static_cast<double>(cv::countNonZero(structureMask)) /
+                                     std::max(approxArea, 1.0)
+                               : 0.0;
+    structureRatio = std::clamp(structureRatio, 0.0, 1.0);
+
+    double score = approxArea;
+    score -= std::abs(ratio - targetRatio) * 500.0;
+    score -= (std::abs(topWidth - bottomWidth) + std::abs(leftHeight - rightHeight)) * 2.0;
+    score -= anglePenalty * 10.0;
+    score += whiteMean * 2000.0;
+    score += structureRatio * 1500.0;
     if (score > bestScore) {
       bestScore = score;
       bestApprox = approx;
@@ -154,10 +215,22 @@ void drawOrderedCorners(cv::Mat& img, const std::vector<cv::Point2f>& pts) {
   };
   const char* labels[4] = {"TL","BL","BR","TR"};
 
+  std::vector<cv::Point> poly;
+  poly.reserve(4);
+  for (const cv::Point2f& p : pts) {
+    poly.emplace_back(cvRound(p.x), cvRound(p.y));
+  }
+  cv::polylines(img, poly, true, cv::Scalar(0, 220, 0), 2, cv::LINE_AA);
+
   for (int i=0;i<4;i++){
-    cv::circle(img, pts[i], 8, colors[i], -1, cv::LINE_AA);
-    cv::putText(img, labels[i], pts[i] + cv::Point2f(10,-10),
-                cv::FONT_HERSHEY_SIMPLEX, 0.7, colors[i], 2, cv::LINE_AA);
+    cv::Point center(cvRound(pts[i].x), cvRound(pts[i].y));
+    cv::circle(img, center, 8, colors[i], -1, cv::LINE_AA);
+
+    std::ostringstream oss;
+    oss << labels[i] << " (" << center.x << ", " << center.y << ")";
+    cv::Point textPos(center.x + 10, center.y - 10);
+    cv::putText(img, oss.str(), textPos, cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                colors[i], 2, cv::LINE_AA);
   }
 }
 

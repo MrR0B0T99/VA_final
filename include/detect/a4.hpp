@@ -27,7 +27,8 @@ bool detectA4Corners(const cv::Mat& frameBGR,
                      std::vector<cv::Point2f>& imagePts);
 
 /**
- * @brief Dessine les 4 coins ordonnés avec labels (TL/BL/BR/TR) pour debug.
+ * @brief Dessine les 4 coins ordonnés avec labels (TL/BL/BR/TR) et coordonnées.
+ *        Les points sont reliés afin de matérialiser le contour détecté.
  */
 void drawOrderedCorners(cv::Mat& img, const std::vector<cv::Point2f>& pts);
 
