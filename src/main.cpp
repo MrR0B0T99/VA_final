@@ -16,6 +16,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <string>
+#include <utility>
 
 int main(int argc, char** argv) {
   try {
@@ -155,8 +157,26 @@ if (useWebcam) {
 
     cv::Mat rvec, tvec;
 
+    bool usePendingFrame = true;
+    bool prevWPressed = false;
+    bool prevVPressed = false;
+
     while (!glfwWindowShouldClose(window)) {
-      if (!cap.read(frameBGR) || frameBGR.empty()) break;
+      if (!usePendingFrame) {
+        if (!cap.read(frameBGR) || frameBGR.empty()) {
+          if (mode == CaptureMode::Video) {
+            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+            if (!cap.read(frameBGR) || frameBGR.empty()) {
+              std::cerr << "Impossible de lire la vidéo.\n";
+              break;
+            }
+          } else {
+            std::cerr << "Lecture webcam échouée.\n";
+            break;
+          }
+        }
+      }
+      usePendingFrame = false;
 
       std::vector<cv::Point2f> imagePts;
       bool okDetect = detect::detectA4Corners(frameBGR, imagePts);
@@ -220,6 +240,29 @@ if (useWebcam) {
       glBindVertexArray(0);
 
       glfwSwapBuffers(window);
+
+      bool wPressed = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+      bool vPressed = glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS;
+
+      CaptureMode requested = mode;
+      if (wPressed && !prevWPressed) requested = CaptureMode::Webcam;
+      if (vPressed && !prevVPressed) requested = CaptureMode::Video;
+      prevWPressed = wPressed;
+      prevVPressed = vPressed;
+
+      if (requested != mode) {
+        cv::Mat newFrame;
+        if (openCapture(requested, newFrame)) {
+          mode = requested;
+          frameBGR = newFrame;
+          usePendingFrame = true;
+          glfwSetWindowTitle(window, (mode == CaptureMode::Video) ? "ARCube (Video)" : "ARCube (Webcam)");
+          glfwSetWindowSize(window, frameBGR.cols, frameBGR.rows);
+          std::cout << ((mode == CaptureMode::Video) ? "Lecture MP4 activée." : "Webcam activée.") << std::endl;
+        } else {
+          std::cerr << "Changement de source impossible, conservation de la source actuelle.\n";
+        }
+      }
     }
 
     // Clean

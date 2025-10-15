@@ -2,67 +2,144 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace detect {
-
-static inline double sqr(double x){ return x*x; }
 
 bool orderFourCorners(const std::vector<cv::Point>& approx,
                       std::vector<cv::Point2f>& ordered) {
   if (approx.size() != 4) return false;
-  std::vector<cv::Point2f> pts(4);
-  for (int i=0;i<4;i++) pts[i] = approx[i];
 
-  // Tri: d'abord par y (haut -> bas), puis par x (gauche -> droite)
-  std::sort(pts.begin(), pts.end(), [](const cv::Point2f& a, const cv::Point2f& b){
-    if (std::abs(a.y - b.y) > 1e-3) return a.y < b.y;
+  std::vector<cv::Point2f> pts;
+  pts.reserve(4);
+  for (const cv::Point& p : approx) pts.emplace_back(p);
+
+  std::sort(pts.begin(), pts.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    if (std::abs(a.y - b.y) > 1e-3f) return a.y < b.y;
     return a.x < b.x;
   });
 
-  std::vector<cv::Point2f> top = { pts[0], pts[1] };
-  std::vector<cv::Point2f> bot = { pts[2], pts[3] };
+  std::vector<cv::Point2f> top(pts.begin(), pts.begin() + 2);
+  std::vector<cv::Point2f> bottom(pts.begin() + 2, pts.end());
 
-  // top[0]=TL, top[1]=TR ; bot[0]=BL, bot[1]=BR
-  if (top[0].x > top[1].x) std::swap(top[0], top[1]);
-  if (bot[0].x > bot[1].x) std::swap(bot[0], bot[1]);
+  std::sort(top.begin(), top.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    return a.x < b.x;
+  });
+  std::sort(bottom.begin(), bottom.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    return a.x < b.x;
+  });
 
-  // *** Ordre final demandé: TL, BL, BR, TR ***
-  ordered = { top[0], bot[0], bot[1], top[1] };
+  const cv::Point2f& TL = top[0];
+  const cv::Point2f& TR = top[1];
+  const cv::Point2f& BL = bottom[0];
+  const cv::Point2f& BR = bottom[1];
+
+  ordered = {TL, BL, BR, TR};
+
+  const double EPS = 1e-3;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = i + 1; j < 4; ++j) {
+      if (cv::norm(ordered[i] - ordered[j]) < EPS) {
+        ordered.clear();
+        return false; // points non distincts
+      }
+    }
+  }
+
   return true;
 }
 
 bool detectA4Corners(const cv::Mat& frameBGR,
                      std::vector<cv::Point2f>& imagePts) {
-  cv::Mat gray, blurred, thresh;
-  cv::cvtColor(frameBGR, gray, cv::COLOR_BGR2GRAY);
-  cv::GaussianBlur(gray, blurred, cv::Size(7,7), 0);
+  imagePts.clear();
+  if (frameBGR.empty()) return false;
 
-  const int H = blurred.rows, W = blurred.cols;
-  const int rw = W/2, rh = H/2;
-  const int rx = (W-rw)/2, ry = (H-rh)/2;
-  const cv::Rect roi(rx, ry, rw, rh);
-  const double meanROI = cv::mean(blurred(roi))[0];
-  const int offset = 15;
-  const double T = std::clamp(meanROI - offset, 0.0, 255.0);
-  cv::threshold(blurred, thresh, T, 255, cv::THRESH_BINARY);
+  cv::Mat gray; cv::cvtColor(frameBGR, gray, cv::COLOR_BGR2GRAY);
 
-  std::vector<std::vector<cv::Point>> contours; std::vector<cv::Vec4i> hier;
-  cv::findContours(thresh, contours, hier, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  cv::Mat eq;
+  {
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
+    clahe->apply(gray, eq);
+  }
+
+  cv::Mat blurred; cv::GaussianBlur(eq, blurred, cv::Size(5,5), 0);
+
+  cv::Mat adaptive;
+  cv::adaptiveThreshold(blurred, adaptive, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv::THRESH_BINARY_INV, 31, 5);
+
+  cv::Mat edges; cv::Canny(blurred, edges, 35, 105, 3, true);
+
+  cv::Mat combined; cv::bitwise_or(adaptive, edges, combined);
+  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5,5));
+  cv::morphologyEx(combined, combined, cv::MORPH_CLOSE, kernel, cv::Point(-1,-1), 2);
+  cv::dilate(combined, combined, kernel, cv::Point(-1,-1), 1);
+
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(combined, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   if (contours.empty()) return false;
 
-  double maxA = 0; int maxIdx = -1;
-  for (int i=0;i<(int)contours.size();++i){
-    const double A = std::fabs(cv::contourArea(contours[i]));
-    if (A > maxA){ maxA = A; maxIdx = i; }
+  const double imgArea = static_cast<double>(frameBGR.cols * frameBGR.rows);
+  const double targetRatio = 297.0 / 210.0; // ~1.414
+
+  double bestScore = -1.0;
+  std::vector<cv::Point> bestApprox;
+
+  for (const auto& contour : contours) {
+    double contourAreaVal = std::fabs(cv::contourArea(contour));
+    if (contourAreaVal < 0.0005 * imgArea) continue; // ignore trop petits éléments
+
+    double peri = cv::arcLength(contour, true);
+    std::vector<cv::Point> approx;
+    cv::approxPolyDP(contour, approx, 0.02 * peri, true);
+    if (approx.size() != 4) continue;
+    if (!cv::isContourConvex(approx)) continue;
+
+    double approxArea = std::fabs(cv::contourArea(approx));
+    if (approxArea < 0.0005 * imgArea) continue;
+
+    std::vector<cv::Point2f> orderedCandidate;
+    if (!orderFourCorners(approx, orderedCandidate)) continue;
+
+    cv::RotatedRect box = cv::minAreaRect(orderedCandidate);
+    double topWidth    = cv::norm(orderedCandidate[3] - orderedCandidate[0]);
+    double bottomWidth = cv::norm(orderedCandidate[2] - orderedCandidate[1]);
+    double leftHeight  = cv::norm(orderedCandidate[1] - orderedCandidate[0]);
+    double rightHeight = cv::norm(orderedCandidate[2] - orderedCandidate[3]);
+
+    double widthAvg  = (topWidth + bottomWidth) * 0.5;
+    double heightAvg = (leftHeight + rightHeight) * 0.5;
+    if (widthAvg < 1.0 || heightAvg < 1.0) continue;
+
+    cv::Size2f boxSize = box.size;
+    double boxWidth = std::max(boxSize.width, boxSize.height);
+    double boxHeight = std::min(boxSize.width, boxSize.height);
+    double ratio = (boxHeight > 0.0) ? (boxWidth / boxHeight) : 0.0;
+    if (ratio < 1.05 || ratio > 1.9) continue;
+
+    double boundingArea = widthAvg * heightAvg;
+    double solidity = approxArea / boundingArea;
+    if (solidity < 0.7) continue;
+
+    double score = approxArea - std::abs(ratio - targetRatio) * 500.0;
+    score -= std::abs(topWidth - bottomWidth) * 2.0;
+    score -= std::abs(leftHeight - rightHeight) * 2.0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestApprox = approx;
+    }
   }
-  if (maxIdx < 0) return false;
 
-  std::vector<cv::Point> approx;
-  const double eps = 0.02 * cv::arcLength(contours[maxIdx], true);
-  cv::approxPolyDP(contours[maxIdx], approx, eps, true);
+  if (bestApprox.size() != 4) return false;
 
-  if (approx.size() != 4) return false;
-  return orderFourCorners(approx, imagePts);
+  std::vector<cv::Point2f> ordered;
+  if (!orderFourCorners(bestApprox, ordered)) return false;
+
+  cv::TermCriteria criteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.01);
+  cv::cornerSubPix(gray, ordered, cv::Size(5,5), cv::Size(-1,-1), criteria);
+
+  imagePts = std::move(ordered);
+  return true;
 }
 
 void drawOrderedCorners(cv::Mat& img, const std::vector<cv::Point2f>& pts) {
