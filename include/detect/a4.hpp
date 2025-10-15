@@ -9,7 +9,7 @@
 namespace detect {
 
 /**
- * @brief Ordonne 4 points en (TL, TR, BR, BL) selon l'image.
+ * @brief Ordonne 4 points en (TL, BL, BR, TR) selon l'image.
  * @param approx 4 points issus d'une approx polygone.
  * @param[out] ordered Points float ordonnés (taille 4).
  * @return true si succès.
@@ -20,7 +20,7 @@ bool orderFourCorners(const std::vector<cv::Point>& approx,
 /**
  * @brief Détecte les quatre coins d'une feuille A4 sur l'image.
  * @param frameBGR Image d'entrée (BGR)
- * @param[out] imagePts Points image ordonnés (TL,TR,BR,BL)
+ * @param[out] imagePts Points image ordonnés (TL,BL,BR,TR)
  * @return true si détecté et ordonné
  */
 bool detectA4Corners(const cv::Mat& frameBGR,
