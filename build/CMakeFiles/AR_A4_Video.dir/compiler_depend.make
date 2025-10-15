@@ -2342,8 +2342,11 @@ CMakeFiles/AR_A4_Video.dir/src/main.cpp.o: ../src/main.cpp \
   ../include/detect/a4.hpp \
   ../include/glx/mesh.hpp \
   ../include/glx/shaders.hpp \
-  ../include/glx/texture.hpp
+  ../include/glx/texture.hpp \
+  ../include/glx/cleanup.hpp
 
+
+../include/glx/cleanup.hpp:
 
 /usr/include/GLFW/glfw3.h:
 

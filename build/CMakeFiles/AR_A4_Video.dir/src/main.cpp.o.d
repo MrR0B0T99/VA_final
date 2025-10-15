@@ -518,4 +518,5 @@ CMakeFiles/AR_A4_Video.dir/src/main.cpp.o: \
  /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/detect/a4.hpp \
  /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/glx/mesh.hpp \
  /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/glx/shaders.hpp \
- /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/glx/texture.hpp
+ /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/glx/texture.hpp \
+ /home/hang_nguyen/Bureau/25_26/VA/AR\ 2025/AR2025/include/glx/cleanup.hpp
