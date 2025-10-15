@@ -47,6 +47,7 @@ int main(){
           std::cerr << "Webcam non détectée !\n";
           return false;
         }
+        newCap.set(cv::CAP_PROP_BUFFERSIZE, 1);
       }
 
       cv::Mat tmp;
@@ -116,6 +117,10 @@ int main(){
     const GLint line_uThickness = glGetUniformLocation(lineProgram, "uThicknessPx");
     const GLint line_uViewport  = glGetUniformLocation(lineProgram, "uViewport");
     const float THICKNESS_PX = 3.0f;
+
+    std::cout << "[Contrôles] V: vidéo MP4, W: webcam. Source active : "
+              << ((mode == CaptureMode::Video) ? "vidéo" : "webcam") << std::endl;
+    std::cout << "Appuyez sur la touche correspondante pour changer instantanément.\n";
 
     // Objet réel A4 (mm) : TL, BL, BR, TR (centré sur (0,0,0))
     const float W = 210.f, H = 297.f;

@@ -10,33 +10,42 @@ bool orderFourCorners(const std::vector<cv::Point>& approx,
                       std::vector<cv::Point2f>& ordered) {
   if (approx.size() != 4) return false;
 
-  const float INF = std::numeric_limits<float>::infinity();
-  cv::Point2f tl, bl, br, tr;
-  float minSum = INF, maxSum = -INF;
-  float minDiff = INF, maxDiff = -INF;
+  std::vector<cv::Point2f> pts;
+  pts.reserve(4);
+  for (const cv::Point& p : approx) pts.emplace_back(p);
 
-  for (const cv::Point& p : approx) {
-    const cv::Point2f pf = p;
-    const float sum = pf.x + pf.y;
-    const float diff = pf.x - pf.y;
+  std::sort(pts.begin(), pts.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    if (std::abs(a.y - b.y) > 1e-3f) return a.y < b.y;
+    return a.x < b.x;
+  });
 
-    if (sum < minSum) { minSum = sum; tl = pf; }
-    if (sum > maxSum) { maxSum = sum; br = pf; }
-    if (diff < minDiff) { minDiff = diff; bl = pf; }
-    if (diff > maxDiff) { maxDiff = diff; tr = pf; }
-  }
+  std::vector<cv::Point2f> top(pts.begin(), pts.begin() + 2);
+  std::vector<cv::Point2f> bottom(pts.begin() + 2, pts.end());
 
-  std::vector<cv::Point2f> candidate = { tl, bl, br, tr };
+  std::sort(top.begin(), top.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    return a.x < b.x;
+  });
+  std::sort(bottom.begin(), bottom.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
+    return a.x < b.x;
+  });
+
+  const cv::Point2f& TL = top[0];
+  const cv::Point2f& TR = top[1];
+  const cv::Point2f& BL = bottom[0];
+  const cv::Point2f& BR = bottom[1];
+
+  ordered = {TL, BL, BR, TR};
+
   const double EPS = 1e-3;
   for (int i = 0; i < 4; ++i) {
     for (int j = i + 1; j < 4; ++j) {
-      if (cv::norm(candidate[i] - candidate[j]) < EPS) {
+      if (cv::norm(ordered[i] - ordered[j]) < EPS) {
+        ordered.clear();
         return false; // points non distincts
       }
     }
   }
 
-  ordered = std::move(candidate);
   return true;
 }
 
@@ -46,13 +55,20 @@ bool detectA4Corners(const cv::Mat& frameBGR,
   if (frameBGR.empty()) return false;
 
   cv::Mat gray; cv::cvtColor(frameBGR, gray, cv::COLOR_BGR2GRAY);
-  cv::Mat blurred; cv::GaussianBlur(gray, blurred, cv::Size(5,5), 0);
+
+  cv::Mat eq;
+  {
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
+    clahe->apply(gray, eq);
+  }
+
+  cv::Mat blurred; cv::GaussianBlur(eq, blurred, cv::Size(5,5), 0);
 
   cv::Mat adaptive;
   cv::adaptiveThreshold(blurred, adaptive, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
                         cv::THRESH_BINARY_INV, 31, 5);
 
-  cv::Mat edges; cv::Canny(blurred, edges, 40, 120, 3, true);
+  cv::Mat edges; cv::Canny(blurred, edges, 35, 105, 3, true);
 
   cv::Mat combined; cv::bitwise_or(adaptive, edges, combined);
   cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5,5));
@@ -85,16 +101,20 @@ bool detectA4Corners(const cv::Mat& frameBGR,
     std::vector<cv::Point2f> orderedCandidate;
     if (!orderFourCorners(approx, orderedCandidate)) continue;
 
-    double widthTop    = cv::norm(orderedCandidate[3] - orderedCandidate[0]);
-    double widthBottom = cv::norm(orderedCandidate[2] - orderedCandidate[1]);
-    double heightLeft  = cv::norm(orderedCandidate[1] - orderedCandidate[0]);
-    double heightRight = cv::norm(orderedCandidate[2] - orderedCandidate[3]);
+    cv::RotatedRect box = cv::minAreaRect(orderedCandidate);
+    double topWidth    = cv::norm(orderedCandidate[3] - orderedCandidate[0]);
+    double bottomWidth = cv::norm(orderedCandidate[2] - orderedCandidate[1]);
+    double leftHeight  = cv::norm(orderedCandidate[1] - orderedCandidate[0]);
+    double rightHeight = cv::norm(orderedCandidate[2] - orderedCandidate[3]);
 
-    double widthAvg  = (widthTop + widthBottom) * 0.5;
-    double heightAvg = (heightLeft + heightRight) * 0.5;
+    double widthAvg  = (topWidth + bottomWidth) * 0.5;
+    double heightAvg = (leftHeight + rightHeight) * 0.5;
     if (widthAvg < 1.0 || heightAvg < 1.0) continue;
 
-    double ratio = (widthAvg > heightAvg) ? widthAvg / heightAvg : heightAvg / widthAvg;
+    cv::Size2f boxSize = box.size;
+    double boxWidth = std::max(boxSize.width, boxSize.height);
+    double boxHeight = std::min(boxSize.width, boxSize.height);
+    double ratio = (boxHeight > 0.0) ? (boxWidth / boxHeight) : 0.0;
     if (ratio < 1.05 || ratio > 1.9) continue;
 
     double boundingArea = widthAvg * heightAvg;
@@ -102,6 +122,8 @@ bool detectA4Corners(const cv::Mat& frameBGR,
     if (solidity < 0.7) continue;
 
     double score = approxArea - std::abs(ratio - targetRatio) * 500.0;
+    score -= std::abs(topWidth - bottomWidth) * 2.0;
+    score -= std::abs(leftHeight - rightHeight) * 2.0;
     if (score > bestScore) {
       bestScore = score;
       bestApprox = approx;
