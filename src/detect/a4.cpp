@@ -2,6 +2,7 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace detect {
 
@@ -9,38 +10,33 @@ bool orderFourCorners(const std::vector<cv::Point>& approx,
                       std::vector<cv::Point2f>& ordered) {
   if (approx.size() != 4) return false;
 
-  std::vector<cv::Point2f> pts;
-  pts.reserve(4);
-  for (const cv::Point& p : approx) pts.emplace_back(p);
+  const float INF = std::numeric_limits<float>::infinity();
+  cv::Point2f tl, bl, br, tr;
+  float minSum = INF, maxSum = -INF;
+  float minDiff = INF, maxDiff = -INF;
 
-  std::sort(pts.begin(), pts.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
-    if (std::abs(a.y - b.y) > 1e-3f) return a.y < b.y;
-    return a.x < b.x;
-  });
+  for (const cv::Point& p : approx) {
+    const cv::Point2f pf = p;
+    const float sum = pf.x + pf.y;
+    const float diff = pf.x - pf.y;
 
-  std::vector<cv::Point2f> top(pts.begin(), pts.begin() + 2);
-  std::vector<cv::Point2f> bottom(pts.begin() + 2, pts.end());
+    if (sum < minSum) { minSum = sum; tl = pf; }
+    if (sum > maxSum) { maxSum = sum; br = pf; }
+    if (diff < minDiff) { minDiff = diff; bl = pf; }
+    if (diff > maxDiff) { maxDiff = diff; tr = pf; }
+  }
 
-  std::sort(top.begin(), top.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
-    return a.x < b.x;
-  });
-  std::sort(bottom.begin(), bottom.end(), [](const cv::Point2f& a, const cv::Point2f& b) {
-    return a.x < b.x;
-  });
-
-  // TL, BL, BR, TR (dans l'espace image)
-  ordered = {top[0], bottom[0], bottom[1], top[1]};
-
+  std::vector<cv::Point2f> candidate = { tl, bl, br, tr };
   const double EPS = 1e-3;
   for (int i = 0; i < 4; ++i) {
     for (int j = i + 1; j < 4; ++j) {
-      if (cv::norm(ordered[i] - ordered[j]) < EPS) {
-        ordered.clear();
+      if (cv::norm(candidate[i] - candidate[j]) < EPS) {
         return false; // points non distincts
       }
     }
   }
 
+  ordered = std::move(candidate);
   return true;
 }
 
@@ -89,10 +85,10 @@ bool detectA4Corners(const cv::Mat& frameBGR,
     std::vector<cv::Point2f> orderedCandidate;
     if (!orderFourCorners(approx, orderedCandidate)) continue;
 
-    double widthTop    = cv::norm(orderedCandidate[1] - orderedCandidate[0]);
-    double widthBottom = cv::norm(orderedCandidate[3] - orderedCandidate[2]);
-    double heightLeft  = cv::norm(orderedCandidate[2] - orderedCandidate[0]);
-    double heightRight = cv::norm(orderedCandidate[3] - orderedCandidate[1]);
+    double widthTop    = cv::norm(orderedCandidate[3] - orderedCandidate[0]);
+    double widthBottom = cv::norm(orderedCandidate[2] - orderedCandidate[1]);
+    double heightLeft  = cv::norm(orderedCandidate[1] - orderedCandidate[0]);
+    double heightRight = cv::norm(orderedCandidate[2] - orderedCandidate[3]);
 
     double widthAvg  = (widthTop + widthBottom) * 0.5;
     double heightAvg = (heightLeft + heightRight) * 0.5;

@@ -117,9 +117,6 @@ int main(){
     const GLint line_uViewport  = glGetUniformLocation(lineProgram, "uViewport");
     const float THICKNESS_PX = 3.0f;
 
-    std::cout << "[Contrôles] V: vidéo MP4, W: webcam. Source active : "
-              << ((mode == CaptureMode::Video) ? "vidéo" : "webcam") << std::endl;
-
     // Objet réel A4 (mm) : TL, BL, BR, TR (centré sur (0,0,0))
     const float W = 210.f, H = 297.f;
     std::vector<cv::Point3f> objectPts = {
