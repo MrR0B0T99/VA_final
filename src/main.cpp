@@ -15,20 +15,59 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <string>
+#include <utility>
 
 /**
  * @brief Démo AR : détection d'une feuille A4 par frame (vidéo), estimateur de pose (solvePnP), rendu OpenGL (cube + axes).
  */
+
+enum class CaptureMode { Video, Webcam };
 int main(){
   try {
     // --- Chargement calibration ---
     const ar::Calibration calib = ar::loadCalibration("../data/camera.yaml");
 
-    // --- Vidéo ---
-    cv::VideoCapture cap("../data/Video_AR_1.mp4");
-    if (!cap.isOpened()) { std::cerr << "Video not found!\n"; return -1; }
+    const std::string VIDEO_PATH = "../data/Video_AR_1.mp4";
+    cv::VideoCapture cap;
+    cv::Mat frameBGR;
+    CaptureMode mode = CaptureMode::Video;
 
-    cv::Mat frameBGR; if (!cap.read(frameBGR) || frameBGR.empty()) { std::cerr << "Empty first frame!\n"; return -1; }
+    auto openCapture = [&](CaptureMode requested, cv::Mat& firstFrame) -> bool {
+      cv::VideoCapture newCap;
+      if (requested == CaptureMode::Video) {
+        newCap.open(VIDEO_PATH);
+        if (!newCap.isOpened()) {
+          std::cerr << "Video not found!\n";
+          return false;
+        }
+      } else {
+        newCap.open(0);
+        if (!newCap.isOpened()) {
+          std::cerr << "Webcam non détectée !\n";
+          return false;
+        }
+      }
+
+      cv::Mat tmp;
+      if (!newCap.read(tmp) || tmp.empty()) {
+        if (requested == CaptureMode::Video) {
+          std::cerr << "Empty first frame from video!\n";
+        } else {
+          std::cerr << "Impossible de lire depuis la webcam !\n";
+        }
+        return false;
+      }
+
+      cap = std::move(newCap);
+      firstFrame = tmp;
+      return true;
+    };
+
+    if (!openCapture(mode, frameBGR)) {
+      return -1;
+    }
+
     int vw = frameBGR.cols, vh = frameBGR.rows;
 
     // --- Init GLFW/GL ---
@@ -39,7 +78,8 @@ int main(){
   #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
   #endif
-    GLFWwindow* window = glfwCreateWindow(vw, vh, "ARCube (Video)", nullptr, nullptr);
+    const char* initialTitle = (mode == CaptureMode::Video) ? "ARCube (Video)" : "ARCube (Webcam)";
+    GLFWwindow* window = glfwCreateWindow(vw, vh, initialTitle, nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window); glfwSwapInterval(1);
 
@@ -77,19 +117,37 @@ int main(){
     const GLint line_uViewport  = glGetUniformLocation(lineProgram, "uViewport");
     const float THICKNESS_PX = 3.0f;
 
-    // Objet réel A4 (mm) : TL, TR, BR, BL (centré sur (0,0,0))
+    // Objet réel A4 (mm) : TL, BL, BR, TR (centré sur (0,0,0))
     const float W = 210.f, H = 297.f;
     std::vector<cv::Point3f> objectPts = {
       {-W*0.5f, -H*0.5f, 0.0f}, // TL
-      {+W*0.5f, -H*0.5f, 0.0f}, // TR
+      {-W*0.5f, +H*0.5f, 0.0f}, // BL
       {+W*0.5f, +H*0.5f, 0.0f}, // BR
-      {-W*0.5f, +H*0.5f, 0.0f}  // BL
+      {+W*0.5f, -H*0.5f, 0.0f}  // TR
     };
 
     cv::Mat rvec, tvec;
 
+    bool usePendingFrame = true;
+    bool prevWPressed = false;
+    bool prevVPressed = false;
+
     while (!glfwWindowShouldClose(window)) {
-      if (!cap.read(frameBGR) || frameBGR.empty()) break;
+      if (!usePendingFrame) {
+        if (!cap.read(frameBGR) || frameBGR.empty()) {
+          if (mode == CaptureMode::Video) {
+            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+            if (!cap.read(frameBGR) || frameBGR.empty()) {
+              std::cerr << "Impossible de lire la vidéo.\n";
+              break;
+            }
+          } else {
+            std::cerr << "Lecture webcam échouée.\n";
+            break;
+          }
+        }
+      }
+      usePendingFrame = false;
 
       // Détection coins
       std::vector<cv::Point2f> imagePts; bool okDetect = detect::detectA4Corners(frameBGR, imagePts);
@@ -154,7 +212,32 @@ int main(){
       glBindVertexArray(0);
 
       glfwSwapBuffers(window);
+
+      bool wPressed = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+      bool vPressed = glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS;
+
+      CaptureMode requested = mode;
+      if (wPressed && !prevWPressed) requested = CaptureMode::Webcam;
+      if (vPressed && !prevVPressed) requested = CaptureMode::Video;
+      prevWPressed = wPressed;
+      prevVPressed = vPressed;
+
+      if (requested != mode) {
+        cv::Mat newFrame;
+        if (openCapture(requested, newFrame)) {
+          mode = requested;
+          frameBGR = newFrame;
+          usePendingFrame = true;
+          glfwSetWindowTitle(window, (mode == CaptureMode::Video) ? "ARCube (Video)" : "ARCube (Webcam)");
+          glfwSetWindowSize(window, frameBGR.cols, frameBGR.rows);
+          std::cout << ((mode == CaptureMode::Video) ? "Lecture MP4 activée." : "Webcam activée.") << std::endl;
+        } else {
+          std::cerr << "Changement de source impossible, conservation de la source actuelle.\n";
+        }
+      }
     }
+
+    cap.release();
 
     // Cleanup
     glDeleteProgram(bgProgram); glDeleteProgram(lineProgram);
